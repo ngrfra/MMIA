@@ -203,9 +203,17 @@ def detect_file_type(df, filename):
     if 'pubblico' in fn_lower or ('uomini' in cols_str and 'donne' in cols_str):
         return "DEMOGRAPHICS"
     
-    # TikTok Demografici
-    if any(x in fn_lower for x in ['followeractivity', 'followergender', 'followerhistory', 'followertop', 'viewers']):
+    # TikTok Demografici specifici
+    if 'followeractivity' in fn_lower:
+        return "TIKTOK_FOLLOWER_ACTIVITY"
+    if 'followerhistory' in fn_lower:
+        return "TIKTOK_FOLLOWER_HISTORY"
+    if 'followergender' in fn_lower or 'followertop' in fn_lower:
         return "TIKTOK_DEMOGRAPHICS"
+    if 'viewers' in fn_lower and 'tiktok' in fn_lower:
+        return "TIKTOK_VIEWERS"
+    if 'overview' in fn_lower and 'tiktok' in fn_lower:
+        return "TIKTOK_OVERVIEW"
     
     return "GENERIC"
 
@@ -438,6 +446,159 @@ def csv_to_readable_text(df, filename=""):
                         if len(geo_val) > 3:  # Evita valori numerici
                             output.append(f"      • {geo_val}")
                 output.append("")
+    
+    # ========== TIKTOK FOLLOWER ACTIVITY ==========
+    elif file_type == "TIKTOK_FOLLOWER_ACTIVITY":
+        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+        hour_col = next((c for c in df.columns if 'hour' in c.lower()), None)
+        active_col = next((c for c in df.columns if 'active' in c.lower() or 'follower' in c.lower()), None)
+        
+        if date_col and hour_col and active_col:
+            # Calcola media per ora del giorno
+            hour_stats = {}
+            for _, row in df.iterrows():
+                hour = str(row[hour_col])
+                active = parse_numeric_value(row[active_col]) or 0
+                if hour not in hour_stats:
+                    hour_stats[hour] = []
+                hour_stats[hour].append(active)
+            
+            if hour_stats:
+                output.append(f"⏰ ATTIVITÀ FOLLOWER: {filename.split('/')[-1].replace('.csv', '')}")
+                output.append("")
+                output.append("   📊 MEDIA FOLLOWER ATTIVI PER ORA:")
+                sorted_hours = sorted(hour_stats.items(), key=lambda x: sum(x[1])/len(x[1]), reverse=True)
+                for hour, values in sorted_hours[:8]:  # Top 8 ore
+                    avg = sum(values) / len(values)
+                    output.append(f"      • Ore {hour:>2}:00 → {format_number(avg):>6} follower attivi (media)")
+                output.append("")
+                
+                # Ora più attiva
+                if sorted_hours:
+                    best_hour, best_values = sorted_hours[0]
+                    best_avg = sum(best_values) / len(best_values)
+                    output.append(f"   ⭐ ORA PIÙ ATTIVA: {best_hour}:00 con {format_number(best_avg)} follower attivi in media")
+                output.append("")
+    
+    # ========== TIKTOK FOLLOWER HISTORY ==========
+    elif file_type == "TIKTOK_FOLLOWER_HISTORY":
+        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+        follower_col = next((c for c in df.columns if 'follower' in c.lower() and 'difference' not in c.lower()), None)
+        diff_col = next((c for c in df.columns if 'difference' in c.lower()), None)
+        
+        if date_col and follower_col:
+            followers = []
+            dates = []
+            diffs = []
+            
+            for _, row in df.iterrows():
+                date_val = format_date(row[date_col])
+                foll = parse_numeric_value(row[follower_col]) or 0
+                diff = parse_numeric_value(row[diff_col]) or 0 if diff_col else 0
+                if foll > 0:
+                    followers.append(foll)
+                    dates.append(date_val)
+                    diffs.append(diff)
+            
+            if followers:
+                output.append(f"📈 CRESCITA FOLLOWER: {filename.split('/')[-1].replace('.csv', '')}")
+                output.append("")
+                output.append(f"   Periodo: {dates[0] if dates else '—'} → {dates[-1] if dates else '—'}")
+                output.append(f"   Follower iniziali: {format_number(followers[0])}")
+                output.append(f"   Follower finali: {format_number(followers[-1])}")
+                
+                growth = followers[-1] - followers[0]
+                growth_pct = (growth / followers[0] * 100) if followers[0] > 0 else 0
+                output.append(f"   Crescita totale: {format_number(growth)} ({growth_pct:+.1f}%)")
+                output.append("")
+                
+                # Giorni con più crescita
+                if diffs:
+                    positive_days = [(dates[i], diffs[i]) for i in range(len(diffs)) if diffs[i] > 0]
+                    positive_days.sort(key=lambda x: x[1], reverse=True)
+                    if positive_days:
+                        output.append("   🚀 GIORNI CON PIÙ CRESCITA:")
+                        for i, (date, diff) in enumerate(positive_days[:5], 1):
+                            output.append(f"      {i}. {date:<12} → +{format_number(diff)} follower")
+                        output.append("")
+    
+    # ========== TIKTOK OVERVIEW ==========
+    elif file_type == "TIKTOK_OVERVIEW":
+        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+        views_col = next((c for c in df.columns if 'view' in c.lower() and 'video' in c.lower()), None)
+        likes_col = next((c for c in df.columns if 'like' in c.lower()), None)
+        comments_col = next((c for c in df.columns if 'comment' in c.lower()), None)
+        shares_col = next((c for c in df.columns if 'share' in c.lower()), None)
+        
+        if date_col:
+            total_views = 0
+            total_likes = 0
+            total_comments = 0
+            total_shares = 0
+            
+            for _, row in df.iterrows():
+                if views_col:
+                    total_views += parse_numeric_value(row[views_col]) or 0
+                if likes_col:
+                    total_likes += parse_numeric_value(row[likes_col]) or 0
+                if comments_col:
+                    total_comments += parse_numeric_value(row[comments_col]) or 0
+                if shares_col:
+                    total_shares += parse_numeric_value(row[shares_col]) or 0
+            
+            output.append(f"📊 OVERVIEW TIKTOK: {filename.split('/')[-1].replace('.csv', '')}")
+            output.append("")
+            output.append(f"   Periodo analizzato: {len(df)} giorni")
+            output.append("")
+            output.append("   📈 TOTALE METRICHE:")
+            output.append(f"      • Visualizzazioni video: {format_number(total_views)}")
+            output.append(f"      • Like: {format_number(total_likes)}")
+            output.append(f"      • Commenti: {format_number(total_comments)}")
+            output.append(f"      • Condivisioni: {format_number(total_shares)}")
+            if total_views > 0:
+                engagement = ((total_likes + total_comments + total_shares) / total_views) * 100
+                output.append(f"      • Engagement rate: {engagement:.2f}%")
+            output.append("")
+            
+            # Media giornaliera
+            days = len(df)
+            if days > 0:
+                output.append("   📅 MEDIA GIORNALIERA:")
+                output.append(f"      • Visualizzazioni: {format_number(total_views/days)}")
+                output.append(f"      • Like: {format_number(total_likes/days)}")
+                output.append(f"      • Commenti: {format_number(total_comments/days)}")
+            output.append("")
+    
+    # ========== TIKTOK VIEWERS ==========
+    elif file_type == "TIKTOK_VIEWERS":
+        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+        total_col = next((c for c in df.columns if 'total' in c.lower() and 'viewer' in c.lower()), None)
+        new_col = next((c for c in df.columns if 'new' in c.lower() and 'viewer' in c.lower()), None)
+        return_col = next((c for c in df.columns if 'returning' in c.lower() and 'viewer' in c.lower()), None)
+        
+        if date_col and total_col:
+            total_viewers = 0
+            new_viewers = 0
+            return_viewers = 0
+            
+            for _, row in df.iterrows():
+                total_viewers += parse_numeric_value(row[total_col]) or 0
+                if new_col:
+                    new_viewers += parse_numeric_value(row[new_col]) or 0
+                if return_col:
+                    return_viewers += parse_numeric_value(row[return_col]) or 0
+            
+            output.append(f"👁️ VIEWERS TIKTOK: {filename.split('/')[-1].replace('.csv', '')}")
+            output.append("")
+            output.append(f"   Periodo: {len(df)} giorni")
+            output.append("")
+            output.append("   📊 TOTALE VIEWERS:")
+            output.append(f"      • Viewers totali: {format_number(total_viewers)}")
+            if new_viewers > 0:
+                output.append(f"      • Nuovi viewers: {format_number(new_viewers)} ({new_viewers/total_viewers*100:.1f}%)")
+            if return_viewers > 0:
+                output.append(f"      • Viewers di ritorno: {format_number(return_viewers)} ({return_viewers/total_viewers*100:.1f}%)")
+            output.append("")
     
     # ========== TIKTOK DEMOGRAPHICS ==========
     elif file_type == "TIKTOK_DEMOGRAPHICS":
