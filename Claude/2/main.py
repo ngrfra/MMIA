@@ -293,24 +293,80 @@ def csv_to_readable_text(df, filename=""):
         roas_col = next((c for c in df.columns if 'roas' in c.lower()), None)
         cpm_col = next((c for c in df.columns if 'cpm' in c.lower()), None)
         
+        # Identifica colonne per filtrare righe di riepilogo
+        name_col = next((c for c in df.columns if 'nome' in c.lower() and 'inserzione' in c.lower()), None)
+        ora_col = next((c for c in df.columns if 'ora' in c.lower() and 'giorno' in c.lower()), None)
+        eta_col = next((c for c in df.columns if 'età' in c.lower() or 'age' in c.lower()), None)
+        dest_col = next((c for c in df.columns if 'destinazione' in c.lower()), None)
+        
+        # Cerca riga di riepilogo (riga con valori grandi ma campi chiave vuoti)
+        summary_row = None
+        if spend_col and imp_col:
+            for idx, row in df.iterrows():
+                spend_val = parse_numeric_value(row[spend_col]) or 0
+                imp_val = parse_numeric_value(row[imp_col]) or 0
+                # Se ha valori grandi ma campi chiave vuoti, è probabilmente un totale
+                name_val = str(row[name_col]).strip() if name_col else ""
+                ora_val = str(row[ora_col]).strip() if ora_col else ""
+                eta_val = str(row[eta_col]).strip() if eta_col else ""
+                
+                is_empty = (not name_val or name_val == "" or name_val.lower() == "nan") and \
+                          (not ora_val or ora_val == "" or ora_val.lower() == "nan") and \
+                          (not eta_val or eta_val == "" or eta_val.lower() == "nan")
+                
+                if is_empty and spend_val > 50 and imp_val > 1000:
+                    summary_row = row
+                    break
+        
         total_spend = 0
         total_imp = 0
         total_clicks = 0
         total_roas = 0
         roas_count = 0
         
-        for _, row in df.iterrows():
+        # Se abbiamo trovato una riga di riepilogo, usala
+        if summary_row is not None:
             if spend_col:
-                total_spend += parse_numeric_value(row[spend_col]) or 0
+                total_spend = parse_numeric_value(summary_row[spend_col]) or 0
             if imp_col:
-                total_imp += parse_numeric_value(row[imp_col]) or 0
+                total_imp = parse_numeric_value(summary_row[imp_col]) or 0
             if click_col:
-                total_clicks += parse_numeric_value(row[click_col]) or 0
+                total_clicks = parse_numeric_value(summary_row[click_col]) or 0
             if roas_col:
-                roas_val = parse_numeric_value(row[roas_col])
+                roas_val = parse_numeric_value(summary_row[roas_col])
                 if roas_val and roas_val > 0:
-                    total_roas += roas_val
-                    roas_count += 1
+                    total_roas = roas_val
+                    roas_count = 1
+        else:
+            # Altrimenti, somma solo le righe dettagliate (escludi riepiloghi)
+            for _, row in df.iterrows():
+                # Escludi righe di riepilogo
+                name_val = str(row[name_col]).strip() if name_col else ""
+                ora_val = str(row[ora_col]).strip() if ora_col else ""
+                eta_val = str(row[eta_col]).strip() if eta_col else ""
+                dest_val = str(row[dest_col]).strip() if dest_col else ""
+                
+                # Skip righe con campi chiave vuoti (sono riepiloghi)
+                if (not name_val or name_val == "" or name_val.lower() == "nan") and \
+                   (not ora_val or ora_val == "" or ora_val.lower() == "nan") and \
+                   (not eta_val or eta_val == "" or eta_val.lower() == "nan"):
+                    continue
+                
+                # Skip righe con "Tutte le..." o "Nessun dettaglio" (sono totali parziali)
+                if dest_val and ("tutte le" in dest_val.lower() or "nessun dettaglio" in dest_val.lower()):
+                    continue
+                
+                if spend_col:
+                    total_spend += parse_numeric_value(row[spend_col]) or 0
+                if imp_col:
+                    total_imp += parse_numeric_value(row[imp_col]) or 0
+                if click_col:
+                    total_clicks += parse_numeric_value(row[click_col]) or 0
+                if roas_col:
+                    roas_val = parse_numeric_value(row[roas_col])
+                    if roas_val and roas_val > 0:
+                        total_roas += roas_val
+                        roas_count += 1
         
         output.append(f"💰 CAMPAGNA: {filename.split('/')[-1].replace('.csv', '')}")
         output.append("")
@@ -333,12 +389,20 @@ def csv_to_readable_text(df, filename=""):
         output.append("")
         
         # Analisi per ora del giorno (se presente)
-        ora_col = next((c for c in df.columns if 'ora' in c.lower() and 'giorno' in c.lower()), None)
         if ora_col and spend_col:
             output.append("   ⏰ PERFORMANCE PER FASCIA ORARIA (Top 5):")
             ora_stats = {}
             for _, row in df.iterrows():
-                ora = str(row[ora_col])[:20] if ora_col else "—"
+                # Escludi righe di riepilogo
+                ora = str(row[ora_col]).strip() if ora_col else ""
+                name_val = str(row[name_col]).strip() if name_col else ""
+                
+                # Skip se ora è vuota o se è una riga di riepilogo
+                if not ora or ora == "" or ora.lower() == "nan":
+                    continue
+                if not name_val or name_val == "" or name_val.lower() == "nan":
+                    continue
+                
                 spend = parse_numeric_value(row[spend_col]) or 0
                 clicks = parse_numeric_value(row[click_col]) or 0 if click_col else 0
                 if spend > 0:
@@ -354,14 +418,18 @@ def csv_to_readable_text(df, filename=""):
             output.append("")
         
         # Top inserzioni
-        name_col = next((c for c in df.columns if 'nome' in c.lower() and 'inserzione' in c.lower()), None)
         if name_col and spend_col:
             top_ads = []
             for _, row in df.iterrows():
-                name = str(row[name_col])[:40] if name_col else "—"
+                name = str(row[name_col]).strip() if name_col else ""
+                # Escludi righe con nome vuoto (riepiloghi)
+                if not name or name == "" or name.lower() == "nan":
+                    continue
+                
                 spend = parse_numeric_value(row[spend_col]) or 0
-                if spend > 0 and name != "—":
-                    top_ads.append((name, spend))
+                # Escludi anche righe con "Tutte le..." o simili
+                if spend > 0 and name and "tutte le" not in name.lower():
+                    top_ads.append((name[:40], spend))
             top_ads.sort(key=lambda x: x[1], reverse=True)
             
             if top_ads:
