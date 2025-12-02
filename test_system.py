@@ -1,6 +1,6 @@
 """
-SOCIAL LOGIC - VERSIONE CORRETTA
-Parsing robusto + Salvataggio corretto per Content/Demographics/Data
+SOCIAL_LOGIC.PY - VERSIONE FINALE CORRETTA
+Fixes: Date parsing, Demographics recognition, Instagram CSV parsing
 """
 
 import pandas as pd
@@ -18,112 +18,17 @@ DATE_MAP = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
 }
-CURRENT_YEAR = datetime.now().year
-
-# ============ DATA RETRIEVAL ============
-
-def get_data_health():
-    """Recupera ultimo dato e tutte le stats"""
-    conn = get_connection()
-    try:
-        last = conn.execute("SELECT MAX(date_recorded) FROM social_stats").fetchone()
-        last_str = last[0] if last and last[0] else None
-        
-        query = """
-        SELECT date_recorded, platform, metric_type, value, source_type
-        FROM social_stats 
-        ORDER BY date_recorded DESC 
-        LIMIT 5000
-        """
-        df = pd.read_sql_query(query, conn)
-        return last_str, df
-    except Exception as e:
-        print(f"Error get_data_health: {e}")
-        return None, pd.DataFrame()
-    finally:
-        conn.close()
-
-def get_content_health():
-    """Recupera performance content"""
-    conn = get_connection()
-    try:
-        query = """
-        SELECT i.post_id, 
-               i.platform, 
-               i.date_published, 
-               i.caption, 
-               i.link,
-               p.views, 
-               p.likes, 
-               p.comments, 
-               p.shares,
-               p.date_recorded
-        FROM posts_inventory i
-        JOIN posts_performance p ON i.post_id = p.post_id
-        WHERE p.date_recorded = (
-            SELECT MAX(date_recorded) 
-            FROM posts_performance 
-            WHERE post_id = i.post_id
-        )
-        ORDER BY p.views DESC
-        LIMIT 200
-        """
-        return pd.read_sql_query(query, conn)
-    except Exception as e:
-        print(f"Error get_content_health: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-def get_file_upload_history():
-    """Recupera storico upload"""
-    conn = get_connection()
-    try:
-        return pd.read_sql_query(
-            "SELECT upload_date, filename, platform, status FROM upload_logs ORDER BY id DESC LIMIT 100",
-            conn
-        )
-    except:
-        return pd.DataFrame()
-    finally:
-        conn.close()
-
-def check_file_log(filename, platform):
-    """Controlla se file già caricato"""
-    conn = get_connection()
-    try:
-        result = conn.execute(
-            "SELECT upload_date FROM upload_logs WHERE filename=? AND platform=? AND status LIKE '%OK%' ORDER BY id DESC LIMIT 1",
-            (filename, platform)
-        ).fetchone()
-        return (True, result[0]) if result else (False, None)
-    except:
-        return False, None
-    finally:
-        conn.close()
-
-def log_upload_event(filename, platform, status):
-    """Registra evento upload"""
-    conn = get_connection()
-    try:
-        conn.execute(
-            "INSERT INTO upload_logs (filename, platform, status) VALUES (?, ?, ?)",
-            (filename, platform, status)
-        )
-        conn.commit()
-    except Exception as e:
-        print(f"Error logging upload: {e}")
-    finally:
-        conn.close()
 
 # ============ PARSING HELPERS ============
 
 def parse_smart_date(date_str):
-    """Parse qualsiasi formato data"""
+    """Parse qualsiasi formato data - FIX ANNO"""
     if not isinstance(date_str, str):
         return None
     
     s = date_str.strip().lower()
+    current_year = datetime.now().year
+    current_month = datetime.now().month
     
     # ISO with timezone (Instagram)
     if 't' in s and '-' in s:
@@ -136,13 +41,14 @@ def parse_smart_date(date_str):
     if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
         return s
     
-    # Italian textual (TikTok): "15 novembre 2024"
+    # Italian textual (TikTok): "15 novembre 2024" or "15 novembre"
     match = re.search(r'(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?', s)
     if match:
         day = int(match.group(1))
         month_str = match.group(2)
-        year = int(match.group(3)) if match.group(3) else CURRENT_YEAR
+        year_specified = match.group(3)
         
+        # Find month
         month = None
         for key, val in DATE_MAP.items():
             if key in month_str:
@@ -150,9 +56,19 @@ def parse_smart_date(date_str):
                 break
         
         if month:
-            # Handle year boundary
-            if datetime.now().month < 6 and month > 8:
-                year -= 1
+            # CRITICAL FIX: Determine correct year
+            if year_specified:
+                year = int(year_specified)
+            else:
+                # No year specified - infer from month
+                # If current month is Jan-Feb and data month is Oct-Dec, it's LAST year
+                # If current month is Nov-Dec and data month is Jan-Feb, it's NEXT year (rare)
+                if current_month <= 2 and month >= 10:
+                    year = current_year - 1  # Ex: We're in Jan 2025, data says "15 novembre" → Nov 2024
+                elif current_month >= 11 and month <= 2:
+                    year = current_year  # Ex: We're in Dec 2024, data says "15 gennaio" → Jan 2024
+                else:
+                    year = current_year  # Same year
             
             try:
                 return datetime(year, month, day).strftime('%Y-%m-%d')
@@ -169,7 +85,7 @@ def parse_smart_date(date_str):
         '%d.%m.%Y'
     ]
     
-    s_clean = s.split()[0]  # Take first part before space
+    s_clean = s.split()[0]
     for fmt in formats:
         try:
             return datetime.strptime(s_clean, fmt).strftime('%Y-%m-%d')
@@ -198,25 +114,18 @@ def clean_number(raw_val, is_currency=False):
     
     # Handle currency vs count
     if is_currency:
-        # Currency: 1.234,56 (EU) or 1,234.56 (US)
         if ',' in s and '.' in s:
             if s.rfind(',') > s.rfind('.'):
-                # EU: 1.234,56
                 s = s.replace('.', '').replace(',', '.')
             else:
-                # US: 1,234.56
                 s = s.replace(',', '')
         elif ',' in s:
-            # Single comma: assume decimal
             s = s.replace(',', '.')
     else:
-        # Count: 1.234 = 1234, 1,234 = 1234
         if '.' in s and re.search(r'\.\d{3}$', s):
-            # 1.234 = thousands
             s = s.replace('.', '')
         s = s.replace(',', '.')
     
-    # Remove non-numeric
     s = re.sub(r'[^\d\.]', '', s)
     
     try:
@@ -225,17 +134,73 @@ def clean_number(raw_val, is_currency=False):
     except:
         return 0
 
+# ============ DATA RETRIEVAL ============
+
+def get_data_health():
+    """Recupera ultimo dato e stats"""
+    conn = get_connection()
+    try:
+        last = conn.execute("SELECT MAX(date_recorded) FROM social_stats").fetchone()
+        last_str = last[0] if last and last[0] else None
+        
+        query = "SELECT * FROM social_stats ORDER BY date_recorded DESC LIMIT 5000"
+        df = pd.read_sql_query(query, conn)
+        return last_str, df
+    except:
+        return None, pd.DataFrame()
+    finally:
+        conn.close()
+
+def get_content_health():
+    """Recupera performance content"""
+    conn = get_connection()
+    try:
+        query = """
+        SELECT i.post_id, i.platform, i.date_published, i.caption, i.link,
+               p.views, p.likes, p.comments, p.shares, p.date_recorded
+        FROM posts_inventory i
+        JOIN posts_performance p ON i.post_id = p.post_id
+        WHERE p.date_recorded = (
+            SELECT MAX(date_recorded) FROM posts_performance WHERE post_id = i.post_id
+        )
+        ORDER BY p.views DESC LIMIT 200
+        """
+        return pd.read_sql_query(query, conn)
+    except:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def check_file_log(filename, platform):
+    """Controlla se file già caricato"""
+    conn = get_connection()
+    try:
+        result = conn.execute(
+            "SELECT upload_date FROM upload_logs WHERE filename=? AND platform=? AND status LIKE '%OK%' ORDER BY id DESC LIMIT 1",
+            (filename, platform)
+        ).fetchone()
+        return (True, result[0]) if result else (False, None)
+    except:
+        return False, None
+    finally:
+        conn.close()
+
+def log_upload_event(filename, platform, status):
+    """Registra evento upload"""
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO upload_logs (filename, platform, status) VALUES (?, ?, ?)",
+                    (filename, platform, status))
+        conn.commit()
+    except:
+        pass
+    finally:
+        conn.close()
+
 # ============ CSV LOADER ============
 
 def smart_csv_loader(uploaded_file):
-    """
-    Carica CSV con encoding auto-detect e trova header reale
-    
-    Returns:
-        df: DataFrame
-        status: "OK" o errore
-        file_type: Tipo rilevato
-    """
+    """Carica CSV con encoding auto-detect"""
     try:
         bytes_data = uploaded_file.getvalue()
         content = None
@@ -268,10 +233,10 @@ def smart_csv_loader(uploaded_file):
         header_keywords = [
             'date', 'data', 'time', 'giorno',
             'video', 'post', 'link', 'permalink',
-            'gender', 'sesso', 'uomini', 'donne',
-            'territor', 'countr', 'città',
+            'gender', 'sesso', 'uomini', 'donne', 'maschi', 'femmine',
+            'territor', 'countr', 'città', 'paes',
             'inserzione', 'campagn', 'impression',
-            'follower', 'reach', 'view', 'like'
+            'follower', 'reach', 'view', 'like', 'copertura', 'interazi'
         ]
         
         header_row = 0
@@ -285,16 +250,10 @@ def smart_csv_loader(uploaded_file):
         
         # Read CSV
         data_io = io.StringIO(content)
-        df = pd.read_csv(
-            data_io,
-            sep=sep,
-            skiprows=header_row,
-            dtype=str,
-            on_bad_lines='skip',
-            engine='python'
-        )
+        df = pd.read_csv(data_io, sep=sep, skiprows=header_row, dtype=str,
+                        on_bad_lines='skip', engine='python')
         
-        # Clean columns
+        # Clean
         df.columns = [str(c).strip() for c in df.columns]
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', case=False, na=False)]
         df = df.dropna(how='all')
@@ -309,7 +268,7 @@ def smart_csv_loader(uploaded_file):
         return None, f"Parse error: {str(e)}", "ERROR"
 
 def detect_file_type(df, cols_str, filename):
-    """Rileva tipo file da colonne e nome"""
+    """Rileva tipo file - FIX DEMOGRAPHICS"""
     
     fn = filename.lower()
     
@@ -319,22 +278,36 @@ def detect_file_type(df, cols_str, filename):
     
     # CONTENT (posts/videos)
     if any(x in cols_str for x in ['video link', 'permalink', 'post time']):
-        if any(x in cols_str for x in ['total views', 'views', 'visualizzazioni']):
+        if any(x in cols_str for x in ['total views', 'views', 'visualizzazioni', 'total likes']):
             return "CONTENT"
     
-    # DEMOGRAPHICS - Gender
-    if ("uomini" in cols_str and "donne" in cols_str) or \
-       ("gender" in cols_str and "distribution" in cols_str):
+    # DEMOGRAPHICS - Gender (FIX: Riconosci pivot Instagram)
+    # Instagram format: Age range columns + Uomini/Donne rows
+    if len(df.columns) >= 3:  # At least: Age, Males, Females
+        # Check if column names look like age ranges
+        age_pattern = r'\d{2}-\d{2}|\d{2}\+'
+        has_age_cols = any(re.search(age_pattern, str(col)) for col in df.columns)
+        
+        # Check for gender keywords in first column or as column names
+        gender_keywords = ['uomini', 'donne', 'maschi', 'femmine', 'male', 'female']
+        has_gender = any(kw in cols_str for kw in gender_keywords)
+        
+        if has_age_cols or (has_gender and len(df.columns) >= 2):
+            return "DEMOGRAPHIC_GENDER"
+    
+    # TikTok gender format
+    if "gender" in cols_str and "distribution" in cols_str:
         return "DEMOGRAPHIC_GENDER"
     
     # DEMOGRAPHICS - Geo
-    if any(x in cols_str for x in ['territor', 'countr', 'città', 'location']):
+    geo_keywords = ['territor', 'countr', 'città', 'location', 'paese', 'paes']
+    if any(x in cols_str for x in geo_keywords):
         if "distribution" in cols_str or len(df.columns) == 2:
             return "DEMOGRAPHIC_GEO"
     
-    # TIME SERIES (default for followers, reach, etc.)
+    # TIME SERIES (Instagram metrics)
     if any(x in cols_str for x in ['date', 'data', 'time', 'giorno']):
-        # Determine metric from filename if generic
+        # Determine metric from filename
         if "follower" in fn:
             return "TIMESERIES_FOLLOWERS"
         elif "reach" in fn or "copertura" in fn:
@@ -343,6 +316,12 @@ def detect_file_type(df, cols_str, filename):
             return "TIMESERIES_IMPRESSIONS"
         elif "interazi" in fn or "interaction" in fn:
             return "TIMESERIES_INTERACTIONS"
+        elif "visit" in fn or "visite" in fn:
+            return "TIMESERIES_VISITS"
+        elif "clic" in fn or "click" in fn:
+            return "TIMESERIES_CLICKS"
+        elif "visual" in fn:
+            return "TIMESERIES_VIEWS"
         else:
             return "TIMESERIES_GENERIC"
     
@@ -351,19 +330,13 @@ def detect_file_type(df, cols_str, filename):
 # ============ SAVE BULK ============
 
 def save_social_bulk(df, platform, file_type):
-    """
-    Salva dati nel database in base al file_type
-    
-    Returns:
-        rows_saved: int
-        message: str
-    """
+    """Salva dati nel database"""
     conn = get_connection()
     processed = 0
     today = datetime.now().strftime('%Y-%m-%d')
     
     try:
-        # ========== 1. META ADS ==========
+        # ========== META ADS ==========
         if file_type == "META_ADS":
             col_name = next((c for c in df.columns if "inserzione" in c.lower()), None)
             col_spend = next((c for c in df.columns if "spes" in c.lower()), None)
@@ -381,7 +354,7 @@ def save_social_bulk(df, platform, file_type):
                             upsert_stat(conn, "Meta Ads", f"Impressions - {name}", impressions, today)
                         processed += 1
         
-        # ========== 2. CONTENT ==========
+        # ========== CONTENT ==========
         elif file_type == "CONTENT":
             col_link = next((c for c in df.columns if "link" in c.lower()), None)
             col_pub = next((c for c in df.columns if "post time" in c.lower() or "publish" in c.lower()), None)
@@ -397,9 +370,7 @@ def save_social_bulk(df, platform, file_type):
                     
                     # Extract post ID
                     post_id = link
-                    # TikTok: video/123456
                     match_tk = re.search(r'video/(\d+)', link)
-                    # Instagram: /p/ABC123 or /reel/ABC123
                     match_ig = re.search(r'/(?:p|reel)/([^/?]+)', link)
                     
                     if match_tk:
@@ -407,7 +378,7 @@ def save_social_bulk(df, platform, file_type):
                     elif match_ig:
                         post_id = match_ig.group(1)
                     
-                    # Parse publish date
+                    # Parse publish date (FIXED)
                     pub_date = parse_smart_date(str(row[col_pub]))
                     if not pub_date:
                         continue
@@ -420,8 +391,7 @@ def save_social_bulk(df, platform, file_type):
                             "INSERT OR REPLACE INTO posts_inventory (post_id, platform, date_published, caption, link) VALUES (?,?,?,?,?)",
                             (post_id, platform, pub_date, title, link)
                         )
-                    except Exception as e:
-                        print(f"Error inserting inventory: {e}")
+                    except:
                         continue
                     
                     # Parse metrics
@@ -431,50 +401,58 @@ def save_social_bulk(df, platform, file_type):
                     shares = clean_number(row.get(col_shares, 0)) if col_shares else 0
                     
                     # Insert performance
-                    conn.execute(
-                        "DELETE FROM posts_performance WHERE post_id=? AND date_recorded=?",
-                        (post_id, today)
-                    )
+                    conn.execute("DELETE FROM posts_performance WHERE post_id=? AND date_recorded=?",
+                               (post_id, today))
                     conn.execute(
                         "INSERT INTO posts_performance (post_id, date_recorded, views, likes, comments, shares) VALUES (?,?,?,?,?,?)",
                         (post_id, today, views, likes, comments, shares)
                     )
                     processed += 1
         
-        # ========== 3. DEMOGRAPHICS - GENDER ==========
+        # ========== DEMOGRAPHICS - GENDER (FIX) ==========
         elif file_type == "DEMOGRAPHIC_GENDER":
-            # Instagram pivot format
-            if "uomini" in df.columns and "donne" in df.columns:
-                age_col = df.columns[0]
-                for _, row in df.iterrows():
-                    age_group = str(row[age_col])
-                    male = clean_number(row['uomini'])
-                    female = clean_number(row['donne'])
-                    
-                    if age_group and age_group != 'nan':
-                        upsert_stat(conn, platform, f"Audience Gender Male ({age_group})", male, today)
-                        upsert_stat(conn, platform, f"Audience Gender Female ({age_group})", female, today)
-                        processed += 1
-            
-            # TikTok format (Gender, Distribution)
-            elif "gender" in df.columns.str.lower().tolist():
-                col_gender = next((c for c in df.columns if "gender" in c.lower()), None)
-                col_dist = next((c for c in df.columns if "distribution" in c.lower()), None)
+            # Instagram pivot format (Age ranges as columns, gender as rows)
+            if len(df.columns) >= 3 and any(re.search(r'\d{2}-\d{2}|\d{2}\+', str(col)) for col in df.columns):
+                # Find age columns
+                age_cols = [c for c in df.columns if re.search(r'\d{2}-\d{2}|\d{2}\+', str(c))]
                 
-                if col_gender and col_dist:
-                    for _, row in df.iterrows():
-                        gender = str(row[col_gender])
-                        value = clean_number(row[col_dist])
-                        
-                        # If value < 1, it's percentage as decimal (0.65 = 65%)
-                        if value < 1 and value > 0:
-                            value = value * 100
-                        
-                        if gender and gender != 'nan':
-                            upsert_stat(conn, platform, f"Audience Gender {gender}", value, today)
+                # Iterate rows (should be Male/Female)
+                for _, row in df.iterrows():
+                    gender_label = str(row.iloc[0]).lower()
+                    
+                    # Determine if Male or Female
+                    if any(x in gender_label for x in ['uomini', 'maschi', 'male', 'm']):
+                        gender = "Male"
+                    elif any(x in gender_label for x in ['donne', 'femmine', 'female', 'f']):
+                        gender = "Female"
+                    else:
+                        gender = gender_label.title()
+                    
+                    # Process each age group
+                    for age_col in age_cols:
+                        value = clean_number(row[age_col])
+                        if value > 0:
+                            metric_name = f"Audience Gender {gender} ({age_col})"
+                            upsert_stat(conn, platform, metric_name, value, today)
                             processed += 1
+            
+            # TikTok format (Gender, Distribution columns)
+            elif "gender" in df.columns[0].lower():
+                col_gender = df.columns[0]
+                col_dist = df.columns[1]
+                
+                for _, row in df.iterrows():
+                    gender = str(row[col_gender]).title()
+                    value = clean_number(row[col_dist])
+                    
+                    if value < 1 and value > 0:
+                        value = value * 100
+                    
+                    if gender and gender != 'Nan':
+                        upsert_stat(conn, platform, f"Audience Gender {gender}", value, today)
+                        processed += 1
         
-        # ========== 4. DEMOGRAPHICS - GEO ==========
+        # ========== DEMOGRAPHICS - GEO ==========
         elif file_type == "DEMOGRAPHIC_GEO":
             if len(df.columns) >= 2:
                 cat_col = df.columns[0]
@@ -484,7 +462,6 @@ def save_social_bulk(df, platform, file_type):
                     location = str(row[cat_col])
                     value = clean_number(row[val_col])
                     
-                    # Handle percentage
                     if value < 1 and value > 0:
                         value = value * 100
                     
@@ -492,39 +469,36 @@ def save_social_bulk(df, platform, file_type):
                         upsert_stat(conn, platform, f"Audience Geo {location}", value, today)
                         processed += 1
         
-        # ========== 5. TIME SERIES ==========
+        # ========== TIME SERIES (FIX: Instagram CSV) ==========
         elif file_type.startswith("TIMESERIES"):
-            # Find date column
             date_col = next((c for c in df.columns if any(x in c.lower() for x in ['date', 'data', 'time', 'giorno'])), None)
             
             if not date_col:
                 return 0, "No date column found"
             
-            # Find value columns (all except date)
             value_cols = [c for c in df.columns if c != date_col]
             
             # Determine metric name
-            if file_type == "TIMESERIES_FOLLOWERS":
-                metric_base = "Followers"
-            elif file_type == "TIMESERIES_REACH":
-                metric_base = "Reach"
-            elif file_type == "TIMESERIES_IMPRESSIONS":
-                metric_base = "Impressions"
-            elif file_type == "TIMESERIES_INTERACTIONS":
-                metric_base = "Interactions"
-            else:
-                metric_base = value_cols[0].title() if value_cols else "Metric"
+            metric_map = {
+                "TIMESERIES_FOLLOWERS": "Followers",
+                "TIMESERIES_REACH": "Reach",
+                "TIMESERIES_IMPRESSIONS": "Impressions",
+                "TIMESERIES_INTERACTIONS": "Interactions",
+                "TIMESERIES_VISITS": "Profile Visits",
+                "TIMESERIES_CLICKS": "Link Clicks",
+                "TIMESERIES_VIEWS": "Profile Views"
+            }
+            
+            metric_base = metric_map.get(file_type, "Metric")
             
             for _, row in df.iterrows():
                 date_val = parse_smart_date(str(row[date_col]))
                 if not date_val:
                     continue
                 
-                # Save each value column
                 for val_col in value_cols:
                     value = clean_number(row[val_col])
                     
-                    # Use metric_base if only one column, otherwise use column name
                     if len(value_cols) == 1:
                         metric_name = metric_base
                     else:
@@ -550,7 +524,7 @@ def upsert_stat(conn, platform, metric, value, date_val):
         )
         conn.execute(
             "INSERT INTO social_stats (platform, metric_type, value, date_recorded, source_type) VALUES (?,?,?,?,?)",
-            (platform, metric, float(value), date_val, 'csv_v2')
+            (platform, metric, float(value), date_val, 'csv_v3')
         )
     except Exception as e:
         print(f"Upsert error: {e}")
