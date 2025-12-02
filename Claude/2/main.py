@@ -180,111 +180,339 @@ def format_date(value):
     
     return s[:12]  # Limita lunghezza
 
+def detect_file_type(df, filename):
+    """Rileva il tipo di file per applicare formattazione specifica"""
+    fn_lower = filename.lower()
+    cols_str = ' '.join([c.lower() for c in df.columns])
+    
+    # Instagram serie temporali
+    if any(x in fn_lower for x in ['clic', 'copertura', 'follower', 'interazioni', 'visite', 'visualizzazioni']):
+        if 'data' in cols_str and 'primary' in cols_str:
+            return "INSTAGRAM_TIMESERIES"
+    
+    # Meta Ads
+    if any(x in fn_lower for x in ['inserzioni', 'eta_destinazi', 'giorno_ora', 'tlp_inserz']):
+        if 'importo speso' in cols_str or 'impression' in cols_str:
+            return "META_ADS"
+    
+    # TikTok Content
+    if 'content' in fn_lower or ('video' in cols_str and 'total views' in cols_str):
+        return "TIKTOK_CONTENT"
+    
+    # Demografici
+    if 'pubblico' in fn_lower or ('uomini' in cols_str and 'donne' in cols_str):
+        return "DEMOGRAPHICS"
+    
+    # TikTok Demografici
+    if any(x in fn_lower for x in ['followeractivity', 'followergender', 'followerhistory', 'followertop', 'viewers']):
+        return "TIKTOK_DEMOGRAPHICS"
+    
+    return "GENERIC"
+
 def csv_to_readable_text(df, filename=""):
-    """Converte DataFrame in testo leggibile e sintetico"""
+    """Converte DataFrame in testo leggibile e intuitivo"""
     
     if df.empty:
         return "⚠️ Il file CSV è vuoto o non contiene dati validi."
     
+    file_type = detect_file_type(df, filename)
     output = []
     
-    # Header sintetico
-    output.append("╔" + "═" * 78 + "╗")
-    output.append(f"║ {'📄 ' + filename:<76} ║")
-    output.append("╠" + "═" * 78 + "╣")
-    output.append(f"║ {'📊 Righe:':<20} {len(df):>56} ║")
-    output.append(f"║ {'📋 Colonne:':<20} {len(df.columns):>56} ║")
-    output.append("╚" + "═" * 78 + "╝")
+    # Header intuitivo
+    output.append("=" * 80)
+    output.append(f"📄 {filename}")
+    output.append("=" * 80)
     output.append("")
     
-    # Riepilogo colonne (compatto)
-    output.append("📌 COLONNE RILEVATE:")
-    cols_per_line = 3
-    for i in range(0, len(df.columns), cols_per_line):
-        cols_chunk = df.columns[i:i+cols_per_line]
-        cols_str = " | ".join([f"{j+1}. {col[:25]}" for j, col in enumerate(cols_chunk)])
-        output.append(f"   {cols_str}")
-    output.append("")
-    
-    # Analisi colonne numeriche (sintetica)
-    numeric_stats = {}
-    for col in df.columns:
-        values = []
-        for v in df[col].dropna().head(200):
-            num = parse_numeric_value(v)
-            if num is not None:
-                values.append(num)
+    # ========== INSTAGRAM SERIE TEMPORALI ==========
+    if file_type == "INSTAGRAM_TIMESERIES":
+        date_col = next((c for c in df.columns if 'data' in c.lower() or 'date' in c.lower()), None)
+        value_col = next((c for c in df.columns if 'primary' in c.lower() or c.lower() not in ['data', 'date']), None)
         
-        if len(values) > 0:
-            numeric_stats[col] = {
-                'total': sum(values),
-                'avg': sum(values) / len(values),
-                'max': max(values),
-                'min': min(values),
-                'count': len(values)
-            }
+        if date_col and value_col:
+            # Estrai metriche chiave
+            values = []
+            dates = []
+            for _, row in df.iterrows():
+                date_val = format_date(row[date_col])
+                num_val = parse_numeric_value(row[value_col])
+                if num_val is not None and date_val != "—":
+                    values.append(num_val)
+                    dates.append(date_val)
+            
+            if values:
+                total = sum(values)
+                avg = total / len(values)
+                max_val = max(values)
+                min_val = min(values)
+                max_idx = values.index(max_val)
+                min_idx = values.index(min_val)
+                
+                # Trend
+                if len(values) > 1:
+                    first_half = sum(values[:len(values)//2]) / (len(values)//2)
+                    second_half = sum(values[len(values)//2:]) / (len(values) - len(values)//2)
+                    trend = "📈 Crescita" if second_half > first_half * 1.1 else "📉 Calo" if second_half < first_half * 0.9 else "➡️ Stabile"
+                else:
+                    trend = "—"
+                
+                output.append(f"📊 ANALISI: {filename.split('/')[-1].replace('.csv', '')}")
+                output.append("")
+                output.append(f"   Periodo: {dates[0] if dates else '—'} → {dates[-1] if dates else '—'}")
+                output.append(f"   Giorni analizzati: {len(values)}")
+                output.append("")
+                output.append("   📈 PERFORMANCE:")
+                output.append(f"      • Totale: {format_number(total)}")
+                output.append(f"      • Media giornaliera: {format_number(avg)}")
+                output.append(f"      • Picco massimo: {format_number(max_val)} ({dates[max_idx] if max_idx < len(dates) else '—'})")
+                output.append(f"      • Valore minimo: {format_number(min_val)} ({dates[min_idx] if min_idx < len(dates) else '—'})")
+                output.append(f"      • Trend: {trend}")
+                output.append("")
+                
+                # Ultimi 7 giorni
+                if len(values) >= 7:
+                    output.append("   📅 ULTIMI 7 GIORNI:")
+                    for i in range(max(0, len(values)-7), len(values)):
+                        output.append(f"      {dates[i] if i < len(dates) else '—':<12} → {format_number(values[i]):>10}")
+                    output.append("")
     
-    if numeric_stats:
-        output.append("📈 STATISTICHE PRINCIPALI:")
-        output.append("")
-        # Tabella compatta
-        for col, stats in list(numeric_stats.items())[:8]:  # Max 8 colonne
-            total_fmt = format_number(stats['total'])
-            avg_fmt = format_number(stats['avg'])
-            max_fmt = format_number(stats['max'])
-            output.append(f"   {col[:30]:<30} │ Tot: {total_fmt:>12} │ Media: {avg_fmt:>10} │ Max: {max_fmt:>10}")
-        output.append("")
-    
-    # Dati principali (sintetizzati)
-    output.append("📋 ANTEPRIMA DATI:")
-    output.append("")
-    
-    # Mostra solo prime 10 righe, in formato tabella compatta
-    preview_rows = min(10, len(df))
-    
-    # Identifica colonne chiave (date, numeri importanti, testo)
-    key_cols = []
-    for col in df.columns:
-        col_lower = col.lower()
-        if any(x in col_lower for x in ['date', 'data', 'time', 'giorno']):
-            key_cols.insert(0, col)  # Date prima
-        elif any(x in col_lower for x in ['view', 'like', 'follower', 'reach', 'spend', 'impression', 'total']):
-            if col not in key_cols:
-                key_cols.append(col)
-        elif len(key_cols) < 4:  # Max 4 colonne chiave
-            key_cols.append(col)
-    
-    # Se ci sono troppe colonne, mostra solo le prime 5
-    display_cols = key_cols[:5] if len(df.columns) > 5 else df.columns
-    
-    # Header tabella
-    header_line = "   " + " │ ".join([f"{col[:18]:<18}" for col in display_cols])
-    output.append(header_line)
-    output.append("   " + "─" * (len(header_line) - 3))
-    
-    # Righe dati
-    for idx, row in df.head(preview_rows).iterrows():
-        row_data = []
-        for col in display_cols:
-            value = row[col]
-            if pd.isna(value) or str(value).strip() == '':
-                formatted = "—"
-            elif any(x in col.lower() for x in ['date', 'data', 'time', 'giorno']):
-                formatted = format_date(value)[:18]
-            elif any(x in col.lower() for x in ['view', 'like', 'follower', 'reach', 'spend', 'impression']):
-                formatted = format_number(value)
-            else:
-                formatted = str(value)[:18]
-            row_data.append(f"{formatted:<18}")
+    # ========== META ADS ==========
+    elif file_type == "META_ADS":
+        # Estrai metriche chiave
+        spend_col = next((c for c in df.columns if 'speso' in c.lower() or 'spend' in c.lower()), None)
+        imp_col = next((c for c in df.columns if 'impression' in c.lower() and 'totali' not in c.lower()), None)
+        click_col = next((c for c in df.columns if 'clic' in c.lower() and 'link' in c.lower()), None)
+        roas_col = next((c for c in df.columns if 'roas' in c.lower()), None)
+        cpm_col = next((c for c in df.columns if 'cpm' in c.lower()), None)
         
-        output.append("   " + " │ ".join(row_data))
+        total_spend = 0
+        total_imp = 0
+        total_clicks = 0
+        total_roas = 0
+        roas_count = 0
+        
+        for _, row in df.iterrows():
+            if spend_col:
+                total_spend += parse_numeric_value(row[spend_col]) or 0
+            if imp_col:
+                total_imp += parse_numeric_value(row[imp_col]) or 0
+            if click_col:
+                total_clicks += parse_numeric_value(row[click_col]) or 0
+            if roas_col:
+                roas_val = parse_numeric_value(row[roas_col])
+                if roas_val and roas_val > 0:
+                    total_roas += roas_val
+                    roas_count += 1
+        
+        output.append(f"💰 CAMPAGNA: {filename.split('/')[-1].replace('.csv', '')}")
+        output.append("")
+        output.append("   💵 PERFORMANCE:")
+        output.append(f"      • Spesa totale: €{format_number(total_spend)}")
+        output.append(f"      • Impression: {format_number(total_imp)}")
+        output.append(f"      • Clic: {format_number(total_clicks)}")
+        if total_imp > 0:
+            ctr_calc = (total_clicks / total_imp) * 100
+            output.append(f"      • CTR: {ctr_calc:.2f}%")
+        if total_clicks > 0:
+            cpc = total_spend / total_clicks
+            output.append(f"      • CPC: €{cpc:.3f}")
+        if total_imp > 0 and total_spend > 0:
+            cpm_calc = (total_spend / total_imp) * 1000
+            output.append(f"      • CPM: €{cpm_calc:.2f}")
+        if roas_count > 0:
+            avg_roas = total_roas / roas_count
+            output.append(f"      • ROAS medio: {avg_roas:.2f}x")
+        output.append("")
+        
+        # Analisi per ora del giorno (se presente)
+        ora_col = next((c for c in df.columns if 'ora' in c.lower() and 'giorno' in c.lower()), None)
+        if ora_col and spend_col:
+            output.append("   ⏰ PERFORMANCE PER FASCIA ORARIA (Top 5):")
+            ora_stats = {}
+            for _, row in df.iterrows():
+                ora = str(row[ora_col])[:20] if ora_col else "—"
+                spend = parse_numeric_value(row[spend_col]) or 0
+                clicks = parse_numeric_value(row[click_col]) or 0 if click_col else 0
+                if spend > 0:
+                    if ora not in ora_stats:
+                        ora_stats[ora] = {'spend': 0, 'clicks': 0}
+                    ora_stats[ora]['spend'] += spend
+                    ora_stats[ora]['clicks'] += clicks
+            
+            sorted_ora = sorted(ora_stats.items(), key=lambda x: x[1]['spend'], reverse=True)
+            for i, (ora, stats) in enumerate(sorted_ora[:5], 1):
+                ctr_ora = (stats['clicks'] / total_imp * 100) if total_imp > 0 else 0
+                output.append(f"      {i}. {ora:<20} | €{format_number(stats['spend']):>8} | CTR: {ctr_ora:.2f}%")
+            output.append("")
+        
+        # Top inserzioni
+        name_col = next((c for c in df.columns if 'nome' in c.lower() and 'inserzione' in c.lower()), None)
+        if name_col and spend_col:
+            top_ads = []
+            for _, row in df.iterrows():
+                name = str(row[name_col])[:40] if name_col else "—"
+                spend = parse_numeric_value(row[spend_col]) or 0
+                if spend > 0 and name != "—":
+                    top_ads.append((name, spend))
+            top_ads.sort(key=lambda x: x[1], reverse=True)
+            
+            if top_ads:
+                output.append("   🏆 TOP 5 INSERZIONI PER SPESA:")
+                for i, (name, spend) in enumerate(top_ads[:5], 1):
+                    output.append(f"      {i}. {name:<40} €{format_number(spend)}")
+                output.append("")
     
-    if len(df) > preview_rows:
-        output.append(f"   ... e altre {len(df) - preview_rows} righe")
+    # ========== TIKTOK CONTENT ==========
+    elif file_type == "TIKTOK_CONTENT":
+        views_col = next((c for c in df.columns if 'view' in c.lower() and 'total' in c.lower()), None)
+        likes_col = next((c for c in df.columns if 'like' in c.lower() and 'total' in c.lower()), None)
+        title_col = next((c for c in df.columns if 'title' in c.lower() or 'video title' in c.lower()), None)
+        
+        if views_col:
+            views_list = []
+            for _, row in df.iterrows():
+                views = parse_numeric_value(row[views_col]) or 0
+                title = str(row[title_col])[:50] if title_col else "—"
+                likes = parse_numeric_value(row[likes_col]) or 0 if likes_col else 0
+                if views > 0:
+                    views_list.append((title, views, likes))
+            
+            if views_list:
+                views_list.sort(key=lambda x: x[1], reverse=True)
+                total_views = sum(v[1] for v in views_list)
+                avg_views = total_views / len(views_list)
+                
+                output.append(f"🎬 CONTENUTI: {filename.split('/')[-1].replace('.csv', '')}")
+                output.append("")
+                output.append(f"   📊 Totale video: {len(views_list)}")
+                output.append(f"   👁️ Visualizzazioni totali: {format_number(total_views)}")
+                output.append(f"   📈 Media per video: {format_number(avg_views)}")
+                output.append("")
+                output.append("   🏆 TOP 5 VIDEO:")
+                for i, (title, views, likes) in enumerate(views_list[:5], 1):
+                    output.append(f"      {i}. {title[:45]}")
+                    output.append(f"         👁️ {format_number(views):>10} | ❤️ {format_number(likes):>8}")
+                output.append("")
     
-    output.append("")
-    output.append("─" * 80)
-    output.append("✅ Report generato con successo")
+    # ========== DEMOGRAPHICS ==========
+    elif file_type == "DEMOGRAPHICS":
+        # Cerca colonne genere
+        uomini_col = next((c for c in df.columns if 'uomini' in c.lower()), None)
+        donne_col = next((c for c in df.columns if 'donne' in c.lower()), None)
+        age_col = next((c for c in df.columns if 'età' in c.lower() or 'age' in c.lower()), df.columns[0] if len(df.columns) > 0 else None)
+        
+        if uomini_col and donne_col:
+            output.append(f"👥 DEMOGRAFIA: {filename.split('/')[-1].replace('.csv', '')}")
+            output.append("")
+            
+            total_m = 0
+            total_f = 0
+            
+            output.append("   👤 DISTRIBUZIONE PER ETÀ E GENERE:")
+            for _, row in df.iterrows():
+                age = str(row[age_col])[:15] if age_col else "—"
+                m = parse_numeric_value(row[uomini_col]) or 0
+                f = parse_numeric_value(row[donne_col]) or 0
+                total_m += m
+                total_f += f
+                tot = m + f
+                if tot > 0:
+                    pct_m = (m / tot) * 100
+                    pct_f = (f / tot) * 100
+                    output.append(f"      {age:<15} | 👨 {pct_m:>5.1f}% | 👩 {pct_f:>5.1f}%")
+            
+            tot_gen = total_m + total_f
+            if tot_gen > 0:
+                output.append("")
+                output.append(f"   📊 TOTALE: 👨 {total_m} ({total_m/tot_gen*100:.1f}%) | 👩 {total_f} ({total_f/tot_gen*100:.1f}%)")
+            output.append("")
+            
+            # Città/Paesi se presenti
+            geo_cols = [c for c in df.columns if any(x in c.lower() for x in ['città', 'citt', 'paesi', 'countr', 'territor'])]
+            if geo_cols:
+                output.append("   🌍 DISTRIBUZIONE GEOGRAFICA:")
+                # Prendi prima riga con valori geografici
+                for _, row in df.iterrows():
+                    if geo_cols[0] in row and not pd.isna(row[geo_cols[0]]):
+                        geo_val = str(row[geo_cols[0]])
+                        if len(geo_val) > 3:  # Evita valori numerici
+                            output.append(f"      • {geo_val}")
+                output.append("")
+    
+    # ========== TIKTOK DEMOGRAPHICS ==========
+    elif file_type == "TIKTOK_DEMOGRAPHICS":
+        output.append(f"👥 DEMOGRAFIA TIKTOK: {filename.split('/')[-1].replace('.csv', '')}")
+        output.append("")
+        
+        # Cerca colonne chiave
+        gender_col = next((c for c in df.columns if 'gender' in c.lower()), None)
+        distribution_col = next((c for c in df.columns if 'distribution' in c.lower() or 'percent' in c.lower()), None)
+        territory_col = next((c for c in df.columns if 'territor' in c.lower() or 'countr' in c.lower()), None)
+        
+        if gender_col and distribution_col:
+            output.append("   👤 DISTRIBUZIONE PER GENERE:")
+            for _, row in df.iterrows():
+                gender = str(row[gender_col])[:15]
+                dist = parse_numeric_value(row[distribution_col]) or 0
+                if dist < 1 and dist > 0:
+                    dist = dist * 100  # Converti da decimale a percentuale
+                if dist > 0:
+                    output.append(f"      • {gender:<15} → {dist:>5.1f}%")
+            output.append("")
+        
+        if territory_col:
+            value_col = next((c for c in df.columns if c != territory_col and parse_numeric_value(df[c].iloc[0] if len(df) > 0 else None) is not None), None)
+            if value_col:
+                output.append("   🌍 TOP TERRITORI:")
+                territories = []
+                for _, row in df.iterrows():
+                    terr = str(row[territory_col])[:30]
+                    val = parse_numeric_value(row[value_col]) or 0
+                    if val > 0:
+                        territories.append((terr, val))
+                territories.sort(key=lambda x: x[1], reverse=True)
+                for i, (terr, val) in enumerate(territories[:10], 1):
+                    output.append(f"      {i:>2}. {terr:<30} → {format_number(val):>10}")
+                output.append("")
+    
+    # ========== FORMATTAZIONE GENERICA ==========
+    else:
+        output.append(f"📊 DATI: {filename.split('/')[-1].replace('.csv', '')}")
+        output.append("")
+        output.append(f"   Righe: {len(df)} | Colonne: {len(df.columns)}")
+        output.append("")
+        
+        # Statistiche numeriche
+        numeric_cols = {}
+        for col in df.columns:
+            values = []
+            for v in df[col].dropna().head(100):
+                num = parse_numeric_value(v)
+                if num is not None:
+                    values.append(num)
+            if len(values) > 0:
+                numeric_cols[col] = {
+                    'total': sum(values),
+                    'avg': sum(values) / len(values),
+                    'max': max(values)
+                }
+        
+        if numeric_cols:
+            output.append("   📈 METRICHE PRINCIPALI:")
+            for col, stats in list(numeric_cols.items())[:5]:
+                output.append(f"      • {col[:35]:<35} | Tot: {format_number(stats['total']):>10} | Media: {format_number(stats['avg']):>10}")
+            output.append("")
+        
+        # Anteprima
+        output.append("   📋 ANTEPRIMA (prime 5 righe):")
+        preview_cols = df.columns[:4] if len(df.columns) > 4 else df.columns
+        for idx, row in df.head(5).iterrows():
+            row_str = " | ".join([f"{str(row[col])[:15]:<15}" for col in preview_cols])
+            output.append(f"      {row_str}")
+        output.append("")
+    
+    output.append("=" * 80)
+    output.append("✅ Report completato")
     
     return "\n".join(output)
 
