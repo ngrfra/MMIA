@@ -324,14 +324,29 @@ def csv_to_readable_text(df, filename=""):
         total_roas = 0
         roas_count = 0
         
-        # Se abbiamo trovato una riga di riepilogo, usala
+        # Se abbiamo trovato una riga di riepilogo, usala per spesa/impression
+        # ma somma i clic dalle righe dettagliate (la riga di riepilogo spesso non ha clic)
         if summary_row is not None:
             if spend_col:
                 total_spend = parse_numeric_value(summary_row[spend_col]) or 0
             if imp_col:
                 total_imp = parse_numeric_value(summary_row[imp_col]) or 0
+            # I clic vanno sommati dalle righe dettagliate
             if click_col:
-                total_clicks = parse_numeric_value(summary_row[click_col]) or 0
+                for _, row in df.iterrows():
+                    # Escludi righe di riepilogo
+                    name_val = str(row[name_col]).strip() if name_col else ""
+                    ora_val = str(row[ora_col]).strip() if ora_col else ""
+                    eta_val = str(row[eta_col]).strip() if eta_col else ""
+                    
+                    if (not name_val or name_val == "" or name_val.lower() == "nan") and \
+                       (not ora_val or ora_val == "" or ora_val.lower() == "nan") and \
+                       (not eta_val or eta_val == "" or eta_val.lower() == "nan"):
+                        continue
+                    
+                    click_val = parse_numeric_value(row[click_col]) or 0
+                    total_clicks += click_val
+            
             if roas_col:
                 roas_val = parse_numeric_value(summary_row[roas_col])
                 if roas_val and roas_val > 0:
@@ -371,7 +386,11 @@ def csv_to_readable_text(df, filename=""):
         output.append(f"💰 CAMPAGNA: {filename.split('/')[-1].replace('.csv', '')}")
         output.append("")
         output.append("   💵 PERFORMANCE:")
-        output.append(f"      • Spesa totale: €{format_number(total_spend)}")
+        # Mostra spesa con precisione maggiore se < 1000
+        if total_spend < 1000:
+            output.append(f"      • Spesa totale: €{total_spend:.2f}")
+        else:
+            output.append(f"      • Spesa totale: €{format_number(total_spend)}")
         output.append(f"      • Impression: {format_number(total_imp)}")
         output.append(f"      • Clic: {format_number(total_clicks)}")
         if total_imp > 0:
@@ -417,19 +436,27 @@ def csv_to_readable_text(df, filename=""):
                 output.append(f"      {i}. {ora:<20} | €{format_number(stats['spend']):>8} | CTR: {ctr_ora:.2f}%")
             output.append("")
         
-        # Top inserzioni
+        # Top inserzioni - raggruppa per nome inserzione e somma spesa
         if name_col and spend_col:
-            top_ads = []
+            ads_dict = {}
             for _, row in df.iterrows():
                 name = str(row[name_col]).strip() if name_col else ""
                 # Escludi righe con nome vuoto (riepiloghi)
                 if not name or name == "" or name.lower() == "nan":
                     continue
                 
+                # Escludi righe con "Tutte le..." o simili
+                if "tutte le" in name.lower() or "nessun dettaglio" in name.lower():
+                    continue
+                
                 spend = parse_numeric_value(row[spend_col]) or 0
-                # Escludi anche righe con "Tutte le..." o simili
-                if spend > 0 and name and "tutte le" not in name.lower():
-                    top_ads.append((name[:40], spend))
+                if spend > 0:
+                    if name not in ads_dict:
+                        ads_dict[name] = 0
+                    ads_dict[name] += spend
+            
+            # Converti in lista e ordina
+            top_ads = [(name[:40], spend) for name, spend in ads_dict.items()]
             top_ads.sort(key=lambda x: x[1], reverse=True)
             
             if top_ads:
