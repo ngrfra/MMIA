@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 import io
 import re
+import chardet  # Gemini ADVICE: per rilevamento encoding robusto
 
 # ============ STREAMLIT CONFIG ============
 
@@ -44,50 +45,58 @@ st.markdown("""
 # ============ CSV LOADER ============
 
 def load_csv_simple(uploaded_file):
-    """Carica CSV con encoding auto-detect"""
+    """Carica CSV con auto-rilevamento encoding e cleaning avanzato."""
     try:
         bytes_data = uploaded_file.getvalue()
         content = None
-        
-        # Try encodings
-        for enc in ['utf-8', 'utf-16', 'utf-8-sig', 'latin-1', 'cp1252']:
+
+        # Gemini MODE: robust encoding detection
+        guess = chardet.detect(bytes_data)
+        encodings_to_try = ['utf-8-sig', 'utf-16', 'utf-8', 'latin-1', 'cp1252']
+        if guess['encoding'] not in encodings_to_try and guess['encoding'] is not None:
+            encodings_to_try.insert(0, guess['encoding'])
+
+        decode_success = False
+        for enc in encodings_to_try:
             try:
                 content = bytes_data.decode(enc)
+                decode_success = True
                 break
-            except:
+            except Exception:
                 continue
-        
-        if not content:
-            return None, "Errore di encoding"
-        
-        lines = content.splitlines()
-        
-        # Find separator
+
+        if not decode_success or not content:
+            return None, "Errore di encoding (fallita auto-detection decodifica)"
+
+        # Pulizia: rimuove caratteri strani/broken da IG/Excel etc
+        content = content.replace('\x00', '')  # null char
+        content = content.replace('\ufffd', '')  # utf-8 replacement
+        content = content.replace('\u200b', '')  # zero-width space
+        content = content.replace('', '')  # altro replacement
+
+        # Filtro su righe non vuote/significative
+        lines = [l for l in content.splitlines() if l.strip() and len(l.replace(',', '').replace(';', '').replace('\t', '')) > 3]
+
+        # Individuazione separatore
         sep = ','
         comma_count = sum(l.count(',') for l in lines[:10])
         semi_count = sum(l.count(';') for l in lines[:10])
         tab_count = sum(l.count('\t') for l in lines[:10])
-        
         if tab_count > max(comma_count, semi_count):
             sep = '\t'
         elif semi_count > comma_count:
             sep = ';'
-        
-        # Find header row
-        header_keywords = ['date', 'data', 'time', 'giorno', 'video', 'post', 'link', 
-                          'gender', 'sesso', 'territor', 'countr', 'follower', 'view', 'like']
-        
+
+        # Individuazione header
         header_row = 0
-        for i, line in enumerate(lines[:50]):
+        header_keywords = ['date', 'data', 'ora', 'video', 'post', 'link', 'follower', 'view', 'like', 'impression', 'primary']
+        for i, line in enumerate(lines[:30]):
             line_lower = line.lower()
-            if sep not in line:
-                continue
             if any(kw in line_lower for kw in header_keywords):
                 header_row = i
                 break
-        
-        # Read CSV
-        data_io = io.StringIO(content)
+
+        data_io = io.StringIO('\n'.join(lines))
         df = pd.read_csv(
             data_io,
             sep=sep,
@@ -96,14 +105,14 @@ def load_csv_simple(uploaded_file):
             on_bad_lines='skip',
             engine='python'
         )
-        
-        # Clean columns
-        df.columns = [str(c).strip() for c in df.columns]
+
+        # Pulizia colonne vuote/Unnamed/NaN
+        df.columns = [str(c).strip().replace('\x00', '').replace('', '') for c in df.columns]
         df = df.loc[:, ~df.columns.str.contains('^Unnamed', case=False, na=False)]
         df = df.dropna(how='all')
-        
+
         return df, "OK"
-        
+
     except Exception as e:
         return None, f"Errore: {str(e)}"
 
