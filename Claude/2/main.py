@@ -201,7 +201,7 @@ def detect_file_type(df, filename):
     
     # Meta Ads
     if any(x in fn_lower for x in ['inserzioni', 'eta_destinazi', 'giorno_ora', 'tlp_inserz']):
-        if 'importo speso' in cols_str or 'impression' in cols_str:
+        if 'importo speso' in cols_str or 'impression' in cols_str or 'cpm' in cols_str:
             return "META_ADS"
     
     # TikTok Content
@@ -215,7 +215,7 @@ def detect_file_type(df, filename):
     # TikTok Demografici specifici
     if 'followeractivity' in fn_lower:
         return "TIKTOK_FOLLOWER_ACTIVITY"
-    if 'followerhistory' in fn_lower:
+    if 'followerhistory' in fn_lower or 'follower history' in fn_lower:
         return "TIKTOK_FOLLOWER_HISTORY"
     if 'followergender' in fn_lower or 'followertop' in fn_lower:
         return "TIKTOK_DEMOGRAPHICS"
@@ -739,6 +739,12 @@ def csv_to_readable_text(df, filename=""):
                 for i, (terr, val) in enumerate(territories[:10], 1):
                     output.append(f"      {i:>2}. {terr:<30} → {format_number(val):>10}")
                 output.append("")
+    
+    # ========== GESTIONE GENERICO (se nessun tipo specifico) ==========
+    # Se non è stato trovato un handler specifico, usa questo fallback
+    # per evitare di non mostrare nulla.
+    if not output:
+        file_type = "GENERIC"
     
     # ========== FORMATTAZIONE GENERICA ==========
     else:
